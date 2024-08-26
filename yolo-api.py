@@ -1,28 +1,11 @@
 from flask import Flask, request, jsonify
-from ultralytics import YOLO
+import subprocess
+import json
 import os
-from functools import wraps
 
 app = Flask(__name__)
 
-# Configure the secret key
-SECRET_KEY = "your_secret_key_here"  # Replace with a strong, unique secret key
-
-# Load the YOLOv8 model
-model = YOLO('yolov8n.pt')
-
-def require_api_key(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        api_key = request.headers.get('X-API-Key')
-        if api_key and api_key == SECRET_KEY:
-            return f(*args, **kwargs)
-        else:
-            return jsonify({'error': 'Unauthorized'}), 401
-    return decorated
-
 @app.route('/detect', methods=['POST'])
-@require_api_key
 def detect_objects():
     if 'image' not in request.files:
         return jsonify({'error': 'No image file provided'}), 400
@@ -36,24 +19,32 @@ def detect_objects():
         image_path = 'temp_image.jpg'
         image_file.save(image_path)
 
-        # Perform object detection
-        results = model(image_path)
+        # Run the YOLO command
+        command = f"yolo detect predict model=yolov8n.pt source={image_path} --save-txt --save-conf --format json"
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            return jsonify({'error': 'YOLO command failed', 'details': result.stderr}), 500
+
+        # Read the JSON output
+        with open('runs/detect/predict/predictions.json', 'r') as f:
+            predictions = json.load(f)
 
         # Extract detected objects
         detected_objects = []
-        for result in results:
-            for box in result.boxes:
-                obj = {
-                    'class': result.names[int(box.cls)],
-                    'confidence': float(box.conf),
-                    'bbox': box.xyxy[0].tolist()
-                }
-                detected_objects.append(obj)
+        for pred in predictions:
+            for obj in pred['predictions']:
+                detected_objects.append({
+                    'class': obj['class'],
+                    'confidence': obj['confidence'],
+                    'bbox': obj['box']
+                })
 
-        # Remove the temporary image file
+        # Clean up temporary files
         os.remove(image_path)
+        os.system('rm -rf runs')
 
         return jsonify(detected_objects)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(debug=True)
